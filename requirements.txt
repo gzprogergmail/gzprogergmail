@@ -1,0 +1,2 @@
+lancedb>=0.5.0
+llama-cpp-python>=0.2.0
