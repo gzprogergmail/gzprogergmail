@@ -33,3 +33,10 @@ ENV/
 # Downloaded models and data
 downloads/
 models/
+
+# LanceDB database files
+mydata/
+*.lance
+*.manifest
+_embedding_cache/
+.lancedb/

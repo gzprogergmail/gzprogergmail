@@ -1,151 +1,152 @@
-"""Interactive chatbot that uses LanceDB for retrieval augmented generation with llama.cpp."""
+"""Chatbot that uses the LanceDB vector database for answering questions."""
 from __future__ import annotations
 
 import sys
+import subprocess
 from pathlib import Path
-from typing import List
+from typing import List, Dict, Any
+import lancedb
 
-from lancedb import connect
-from lancedb.embeddings import get_default_embedding_function
-from llama_cpp import Llama
+# Check for required packages and install if missing
+try:
+    import pandas as pd
+except ImportError:
+    print("[chatbot] Installing pandas...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "pandas"])
+    import pandas as pd
 
-MODEL_PATH = Path("downloads/models/gpt-oss-20b.Q4_K_M.gguf")
-DATABASE_SUBDIR = "mydata"
-TABLE_NAME = "documents"
+try:
+    from sentence_transformers import SentenceTransformer
+except ImportError:
+    print("[chatbot] Installing sentence-transformers...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "sentence-transformers"])
+    from sentence_transformers import SentenceTransformer
+
+# Number of relevant chunks to retrieve
+TOP_K = 5
 
 
 def printStatus(message: str) -> None:
+    """Print a status message."""
     print(f"[chatbot] {message}")
 
 
-def loadModel() -> Llama:
-    if not MODEL_PATH.exists():
-        raise FileNotFoundError(
-            "Model file not found. Please run initializer.py and ensure the download completed."
-        )
-    printStatus("Loading language model (this may take a moment)")
-    model = Llama(model_path=str(MODEL_PATH), n_ctx=4096, n_threads=4)
-    return model
+def printAssistant(message: str) -> None:
+    """Print a message from the assistant."""
+    print(f"\n[Assistant]: {message}\n")
 
 
-def connectDatabase(contentDirectory: Path):
-    databasePath = contentDirectory / DATABASE_SUBDIR
-    if not databasePath.exists():
-        raise FileNotFoundError(
-            f"LanceDB database not found at {databasePath}. Run ingest.py for the target directory first."
-        )
-    db = connect(str(databasePath))
-    return db.open_table(TABLE_NAME)
+def get_embedding_model():
+    """Create a sentence transformer embedding model."""
+    printStatus("Loading embedding model...")
+    return SentenceTransformer("all-MiniLM-L6-v2")
 
 
-def runHybridSearch(table, queryText: str, embeddingFunction, topK: int = 5) -> List[dict]:
-    vector = embeddingFunction.embed([queryText])[0]
+def connect_to_database():
+    """Connect to the LanceDB database in the script's directory."""
+    # Use script's directory for database location
+    script_dir = Path(__file__).parent.resolve()
+    database_path = script_dir / "mydata"
 
-    vectorResults: List[dict] = []
-    keywordResults: List[dict] = []
+    if not database_path.exists():
+        printStatus(f"Database not found at {database_path}")
+        printStatus("Please run ingest.py first to create the database")
+        sys.exit(1)
 
+    printStatus(f"Connecting to database at {database_path}")
+    return lancedb.connect(str(database_path))
+
+
+def search_documents(query: str, db, model) -> List[Dict[str, Any]]:
+    """Search for relevant document chunks based on query."""
+    printStatus(f"Searching for: {query}")
+
+    # Check if the documents table exists
+    table_name = "documents"
+    if table_name not in db.table_names():
+        printStatus(f"Table '{table_name}' not found in database")
+        return []
+
+    # Open the table
+    table = db.open_table(table_name)
+
+    # Generate query embedding
+    query_embedding = model.encode([query])[0]
+
+    # Search for similar documents
     try:
-        vectorResults = table.search(vector).metric("cosine").limit(topK).to_list()
-    except Exception:  # pylint: disable=broad-except
-        pass
-
-    try:
-        keywordResults = table.search(queryText).limit(topK).to_list()
-    except Exception:  # pylint: disable=broad-except
-        pass
-
-    combined: dict[tuple[str, int, int], dict] = {}
-    scoreBias = 1.0
-
-    for rank, item in enumerate(vectorResults, start=1):
-        score = 1 / rank
-        key = (item.get("sourcePath"), item.get("startLine"), item.get("endLine"))
-        if key in combined:
-            combined[key]["score"] += score * scoreBias
-        else:
-            combined[key] = {
-                "score": score * scoreBias,
-                "item": item,
-            }
-
-    for rank, item in enumerate(keywordResults, start=1):
-        key = (item["sourcePath"], item["startLine"], item["endLine"])
-        score = 1 / rank
-        if key in combined:
-            combined[key]["score"] += score
-        else:
-            combined[key] = {"score": score, "item": item}
-
-    ranked = sorted(combined.values(), key=lambda entry: entry["score"], reverse=True)
-    return [entry["item"] for entry in ranked[:topK]]
-
-
-def buildPrompt(query: str, contexts: List[dict]) -> str:
-    contextBlocks = []
-    for item in contexts:
-        block = (
-            f"Source: {item.get('sourcePath')} (lines {item.get('startLine')} - {item.get('endLine')})\n"
-            f"Content:\n{item.get('text')}"
+        results = (
+            table.search(query_embedding)
+            .metric("cosine")
+            .limit(TOP_K)
+            .to_pandas()
+            .to_dict("records")
         )
-        contextBlocks.append(block)
+    except Exception as e:
+        printStatus(f"Error during search: {e}")
+        # Fallback to a simpler approach if pandas conversion fails
+        results = []
+        raw_results = table.search(query_embedding).metric("cosine").limit(TOP_K).to_list()
+        for item in raw_results:
+            results.append({k: v for k, v in item.items()})
 
-    contextText = "\n\n".join(contextBlocks)
-    prompt = (
-        "You are a concise assistant. Use the provided context to answer the question. "
-        "If the answer is not contained within the context, say you do not know.\n\n"
-        f"Context:\n{contextText}\n\nQuestion: {query}\nAnswer:"
-    )
-    return prompt
+    return results
 
 
-def startChatLoop(table, model: Llama) -> None:
-    embeddingFunction = get_default_embedding_function()
+def format_results(results: List[Dict[str, Any]]) -> str:
+    """Format search results into a readable response."""
+    if not results:
+        return "I couldn't find any relevant information for your query."
+
+    formatted_response = "Here's what I found:\n\n"
+
+    for i, result in enumerate(results, 1):
+        source_path = result.get("sourcePath", "Unknown source")
+        text = result.get("text", "No text available")
+        lines = f"Lines {result.get('startLine', '?')}-{result.get('endLine', '?')}"
+
+        formatted_response += f"--- Result {i} ---\n"
+        formatted_response += f"Source: {source_path} ({lines})\n"
+        formatted_response += f"{text}\n\n"
+
+    return formatted_response
+
+
+def chat_loop():
+    """Run the main chat loop."""
+    printStatus("Initializing chatbot...")
+
+    # Connect to the database
+    db = connect_to_database()
+
+    # Load the embedding model
+    model = get_embedding_model()
+
+    printStatus("Ready! Type 'exit' or 'quit' to end the conversation.")
 
     while True:
-        try:
-            userInput = input("Ask a question (or type 'exit'): ").strip()
-        except EOFError:
-            print()
+        user_input = input("\n[You]: ").strip()
+
+        if user_input.lower() in ("exit", "quit", "bye"):
+            printStatus("Goodbye!")
             break
 
-        if not userInput:
-            continue
-        if userInput.lower() in {"exit", "quit"}:
-            break
-
-        contexts = runHybridSearch(table, userInput, embeddingFunction)
-        if not contexts:
-            printStatus("No relevant context found. Consider ingesting more content.")
+        if not user_input:
             continue
 
-        prompt = buildPrompt(userInput, contexts)
-        try:
-            response = model(prompt, max_tokens=512, stop=["Question:"])
-        except Exception as error:  # pylint: disable=broad-except
-            printStatus(f"Model inference failed: {error}")
-            continue
+        # Search for relevant documents
+        results = search_documents(user_input, db, model)
 
-        text = response.get("choices", [{}])[0].get("text", "").strip()
-        print(f"\n{text}\n")
-
-    printStatus("Goodbye")
-
-
-def runChatbot() -> None:
-    if len(sys.argv) < 2:
-        print("Usage: python chatbot.py <path-to-ingested-directory>")
-        sys.exit(1)
-
-    contentDirectory = Path(sys.argv[1]).expanduser().resolve()
-    try:
-        table = connectDatabase(contentDirectory)
-        model = loadModel()
-    except Exception as error:  # pylint: disable=broad-except
-        printStatus(f"Error: {error}")
-        sys.exit(1)
-
-    startChatLoop(table, model)
+        # Format and display the response
+        response = format_results(results)
+        printAssistant(response)
 
 
 if __name__ == "__main__":
-    runChatbot()
+    try:
+        chat_loop()
+    except KeyboardInterrupt:
+        printStatus("\nGoodbye!")
+    except Exception as e:
+        printStatus(f"Error: {e}")
+        sys.exit(1)
