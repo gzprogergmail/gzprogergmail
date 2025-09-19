@@ -5,9 +5,13 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Sequence
+from sentence_transformers import SentenceTransformer
+import lancedb
 
-from lancedb import connect
-from lancedb.embeddings import get_default_embedding_function
+# Define paths
+DATA_DIR = Path("data")
+DB_PATH = Path("downloads/lancedb")
+DB_TABLE_NAME = "documents"
 
 
 @dataclass
@@ -28,13 +32,24 @@ def printStatus(message: str) -> None:
 
 
 def promptForDirectory() -> Path:
-    directoryInput = input("Enter directory containing Markdown files: ").strip()
-    if not directoryInput:
-        raise ValueError("Directory path cannot be empty")
-    directoryPath = Path(directoryInput).expanduser().resolve()
-    if not directoryPath.exists() or not directoryPath.is_dir():
-        raise FileNotFoundError(f"Directory not found: {directoryPath}")
-    return directoryPath
+    """Prompt for a directory path until a valid one is provided."""
+    while True:
+        directoryInput = input("Enter directory containing Markdown files: ").strip()
+
+        if not directoryInput:
+            printStatus("Directory path cannot be empty. Please try again.")
+            continue
+
+        try:
+            directoryPath = Path(directoryInput).expanduser().resolve()
+            if directoryPath.exists() and directoryPath.is_dir():
+                return directoryPath
+            else:
+                printStatus(f"Directory not found: {directoryPath}")
+                printStatus("Please enter a valid directory path.")
+        except Exception as e:
+            printStatus(f"Error processing path: {e}")
+            printStatus("Please enter a valid directory path.")
 
 
 def readMarkdownFiles(directoryPath: Path) -> List[Path]:
@@ -88,6 +103,19 @@ def chunkTokens(tokens: Sequence[TokenSlice], chunkSize: int = 500, overlap: int
     return chunks
 
 
+# Create a custom embedding function
+def get_embedding_function():
+    """Create a sentence transformer embedding function."""
+    printStatus("Initializing embedding model...")
+    model = SentenceTransformer("all-MiniLM-L6-v2")
+
+    class EmbeddingFunction:
+        def embed(self, texts):
+            return model.encode(texts)
+
+    return EmbeddingFunction()
+
+
 def generateRecords(filePath: Path, embeddingFunction) -> List[dict]:
     content = filePath.read_text(encoding="utf-8")
     tokens = buildTokenStream(content)
@@ -120,7 +148,8 @@ def ingestDirectory(directoryPath: Path) -> None:
         raise RuntimeError("No Markdown files were found in the provided directory")
 
     databasePath = directoryPath / "mydata"
-    db = connect(str(databasePath))
+    # Fix: Use lancedb.connect instead of connect
+    db = lancedb.connect(str(databasePath))
     tableName = "documents"
     table = db.open_table(tableName) if tableName in db.table_names() else None
     if table is not None:
@@ -128,7 +157,9 @@ def ingestDirectory(directoryPath: Path) -> None:
             table.create_index(metric="cosine", vector_column_name="vector")
         except Exception:  # pylint: disable=broad-except
             pass
-    embeddingFunction = get_default_embedding_function()
+
+    # Fix: Use our custom embedding function instead of get_default_embedding_function
+    embeddingFunction = get_embedding_function()
 
     for filePath in markdownFiles:
         printStatus(f"Processing {filePath}")
