@@ -60,7 +60,10 @@ except Exception as e:
     # Fallback to known static URLs if GitHub API request fails
     LLAMA_CPP_URLS = FALLBACK_URLS
 
-GPT_OSS_MODEL_URL = "https://huggingface.co/microsoft/DialoGPT-medium/resolve/main/pytorch_model.bin"
+# Update the model URL to point to a more accessible GGUF model that works with llama.cpp
+# Original URL had authentication issues:
+# GPT_OSS_MODEL_URL = "https://huggingface.co/microsoft/DialoGPT-medium/resolve/main/pytorch_model.bin"
+GPT_OSS_MODEL_URL = "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
 
 DOWNLOAD_DIRECTORY = Path("downloads")
 MAX_RETRIES = 3
@@ -383,30 +386,91 @@ def ensureLlamaCppPython() -> bool:
 
 
 def ensureGptOssModel() -> bool:
-    """Download a suitable model file."""
+    """Download a suitable GGUF format model file for use with llama.cpp."""
     try:
-        # Use a smaller, more accessible model for testing
-        modelUrl = "https://huggingface.co/microsoft/DialoGPT-small/resolve/main/config.json"
-        modelFileName = "test_model_config.json"
+        # Use TinyLlama which is small (1.1B) and publicly accessible without authentication
+        modelUrl = GPT_OSS_MODEL_URL
+        modelFileName = "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"  # Proper GGUF model file
         modelPath = DOWNLOAD_DIRECTORY / "models" / modelFileName
 
+        # Create models directory if it doesn't exist
+        (DOWNLOAD_DIRECTORY / "models").mkdir(parents=True, exist_ok=True)
+
+        printStatus(f"Attempting to download {modelFileName} (this may take a while for larger models)")
+
         try:
-            downloadFile(modelUrl, modelPath)
-            printStatus("Test model file downloaded successfully")
-            return True
-        except InitializationError as download_error:
-            printError(f"Model download failed: {download_error}")
-            printStatus("Consider downloading models manually or check network connectivity")
-            # Try alternative file from a different source
-            try:
-                alt_url = "https://raw.githubusercontent.com/microsoft/DialoGPT/master/LICENSE"
-                alt_path = DOWNLOAD_DIRECTORY / "models" / "license.txt"
-                printStatus("Trying alternative download...")
-                downloadFile(alt_url, alt_path)
-                printStatus("Alternative file downloaded successfully")
+            # Add special header for Hugging Face downloads
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            }
+
+            # Use requests for better handling of Hugging Face downloads
+            response = requests.get(modelUrl, headers=headers, stream=True)
+            response.raise_for_status()
+
+            total_size = int(response.headers.get('content-length', 0))
+            block_size = 1024 * 1024  # 1 MB chunks
+
+            if total_size > 0:
+                printStatus(f"Model size: {total_size / (1024 * 1024):.2f} MB")
+
+            with open(modelPath, 'wb') as f:
+                downloaded = 0
+                for data in response.iter_content(block_size):
+                    downloaded += len(data)
+                    f.write(data)
+                    if total_size > 0:
+                        percent = min(downloaded * 100 / total_size, 100)
+                        sys.stdout.write(f"\r[setup] Download progress: {percent:.1f}% ({downloaded/(1024*1024):.1f} MB)")
+                        sys.stdout.flush()
+
+                if total_size > 0:
+                    sys.stdout.write("\n")
+
+            # Verify the model file exists and has a reasonable size (at least 100KB)
+            if modelPath.exists() and modelPath.stat().st_size > 100 * 1024:
+                printStatus(f"Model file downloaded successfully: {modelPath}")
+
+                # Test if the model can be loaded by llama.cpp
+                try:
+                    import llama_cpp
+                    printStatus("Testing model loading with llama-cpp-python...")
+                    # Just create a model object to see if it loads
+                    model = llama_cpp.Llama(
+                        model_path=str(modelPath),
+                        n_ctx=512,  # Small context for testing
+                        n_batch=8,
+                        verbose=False
+                    )
+                    printStatus("Model loaded successfully with llama-cpp-python")
+                except ImportError:
+                    printStatus("llama-cpp-python not available for model testing")
+                except Exception as e:
+                    printWarning(f"Model loaded but test failed: {e}")
+
                 return True
+            else:
+                printError("Downloaded model file is too small or doesn't exist")
+                return False
+
+        except Exception as download_error:
+            printError(f"Model download failed: {download_error}")
+
+            # Try downloading a smaller model as fallback
+            try:
+                fallback_url = "https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.1-GGUF/resolve/main/mistral-7b-instruct-v0.1.Q2_K.gguf"
+                fallback_path = DOWNLOAD_DIRECTORY / "models" / "mistral-7b-instruct-v0.1.Q2_K.gguf"
+                printStatus("Trying alternative model download...")
+                downloadFile(fallback_url, fallback_path)
+
+                if fallback_path.exists() and fallback_path.stat().st_size > 100 * 1024:
+                    printStatus("Alternative model file downloaded successfully")
+                    return True
+                else:
+                    return False
             except Exception:
                 return False
+
     except Exception as error:  # pylint: disable=broad-except
         printError(f"Failed to download model: {error}")
         return False
