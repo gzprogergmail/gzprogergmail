@@ -147,7 +147,12 @@ def ingestDirectory(directoryPath: Path) -> None:
     if not markdownFiles:
         raise RuntimeError("No Markdown files were found in the provided directory")
 
-    databasePath = directoryPath / "mydata"
+    # Save database in the script's directory rather than in the markdown files directory
+    scriptDir = Path(__file__).parent.resolve()
+    databasePath = scriptDir / "mydata"
+
+    printStatus(f"Saving database to {databasePath}")
+
     # Fix: Use lancedb.connect instead of connect
     db = lancedb.connect(str(databasePath))
     tableName = "documents"
