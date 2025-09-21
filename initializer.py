@@ -14,6 +14,7 @@ from typing import Optional, Callable
 from urllib.error import URLError, HTTPError
 from urllib.request import urlopen, Request, urlretrieve
 import requests  # Added import at the correct location
+import threading  # new import
 
 # Create SSL context that works across platforms
 ssl_context = ssl.create_default_context()
@@ -390,11 +391,20 @@ def ensureGptOssModel() -> bool:
     try:
         # Use TinyLlama which is small (1.1B) and publicly accessible without authentication
         modelUrl = GPT_OSS_MODEL_URL
-        modelFileName = "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"  # Proper GGUF model file
+        # Use the GPT-OSS 20B GGUF model
+        modelFileName = "gpt-oss-20b.Q4_K.gguf"
+        # Point modelUrl to the 20B GGUF on Hugging Face (adjust if the actual repo/filename differs)
+        modelUrl = "https://huggingface.co/bartowski/openai_gpt-oss-20b-GGUF/resolve/main/openai_gpt-oss-20b-Q8_0.gguf"
         modelPath = DOWNLOAD_DIRECTORY / "models" / modelFileName
 
         # Create models directory if it doesn't exist
         (DOWNLOAD_DIRECTORY / "models").mkdir(parents=True, exist_ok=True)
+
+        # Check if model file already exists and is a reasonable size
+        if modelPath.exists() and modelPath.stat().st_size > 100 * 1024 * 1024:  # At least 100MB
+            printStatus(f"GPT-OSS model file already exists: {modelPath}")
+            printStatus("Skipping download")
+            return True
 
         printStatus(f"Attempting to download {modelFileName} (this may take a while for larger models)")
 
@@ -454,46 +464,122 @@ def ensureGptOssModel() -> bool:
                 return False
 
         except Exception as download_error:
-            printError(f"Model download failed: {download_error}")
-
-            # Try downloading a smaller model as fallback
-            try:
-                fallback_url = "https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.1-GGUF/resolve/main/mistral-7b-instruct-v0.1.Q2_K.gguf"
-                fallback_path = DOWNLOAD_DIRECTORY / "models" / "mistral-7b-instruct-v0.1.Q2_K.gguf"
-                printStatus("Trying alternative model download...")
-                downloadFile(fallback_url, fallback_path)
-
-                if fallback_path.exists() and fallback_path.stat().st_size > 100 * 1024:
-                    printStatus("Alternative model file downloaded successfully")
-                    return True
-                else:
-                    return False
-            except Exception:
-                return False
+            printError(f"GPT-OSS model download failed: {download_error}")
+            return False
 
     except Exception as error:  # pylint: disable=broad-except
-        printError(f"Failed to download model: {error}")
+        printError(f"Failed to download GPT-OSS model: {error}")
         return False
+
+
+def _spinner(stop_event: threading.Event) -> None:
+    """Simple console spinner while a background operation runs."""
+    import itertools
+
+    for ch in itertools.cycle("|/-\\"):
+        if stop_event.is_set():
+            break
+        sys.stdout.write(f"\r[setup] Loading model... {ch}")
+        sys.stdout.flush()
+        time.sleep(0.12)
+    sys.stdout.write("\r[setup] Loading model... done\n")
+    sys.stdout.flush()
+
+
+def load_and_test_model(modelPath: Path, n_ctx: int = 512) -> bool:
+    """Load a GGUF model with llama-cpp-python, show loading activity, send 'Hi' and print the response.
+
+    This function is intentionally lightweight: it shows activity while llama.cpp loads
+    (spinner) and runs a single short completion to verify the model responds.
+    """
+    # Check file exists
+    if not modelPath.exists():
+        printError(f"Model file not found: {modelPath}")
+        return False
+
+    # Defer import so ensureLlamaCppPython can install it earlier
+    try:
+        import llama_cpp
+    except Exception as e:
+        printError(f"llama-cpp-python not available for testing: {e}")
+        return False
+
+    # Start spinner thread
+    stop_event = threading.Event()
+    spinner_thread = threading.Thread(target=_spinner, args=(stop_event,), daemon=True)
+    spinner_thread.start()
+
+    model = None
+    try:
+        load_start = time.time()
+        model = llama_cpp.Llama(model_path=str(modelPath), n_ctx=n_ctx, n_batch=8, verbose=False)
+        load_time = time.time() - load_start
+    except Exception as e:
+        printError(f"Failed to load model: {e}")
+        stop_event.set()
+        spinner_thread.join()
+        return False
+
+    # Stop spinner and report timing
+    stop_event.set()
+    spinner_thread.join()
+    printStatus(f"Model loaded in {load_time:.2f} s: {modelPath.name}")
+
+    # Send a short test prompt ("Hi") and print the response
+    try:
+        prompt = "Hi"
+        printStatus(f"Sending test prompt to model: {prompt!r}")
+        # small completion for a quick sanity check
+        out = model.create_completion(prompt, max_tokens=50, temperature=0.0, stream=False)
+        response_text = out["choices"][0]["text"].strip()
+        printStatus("Model test response:")
+        print(response_text)
+        # Also log the test
+        try:
+            import logging
+            logging.getLogger("initializer").info("MODEL TEST PROMPT: %s", prompt)
+            logging.getLogger("initializer").info("MODEL TEST RESPONSE: %s", response_text)
+        except Exception:
+            pass
+        return True
+    except Exception as e:
+        printError(f"Model produced an error during test completion: {e}")
+        return False
+    finally:
+        # Best-effort cleanup (llama-cpp may provide cleanup method)
+        try:
+            if model is not None:
+                model.cleanup()
+        except Exception:
+            pass
 
 
 def runInitializer() -> None:
     """Run the entire initialization workflow."""
     printStatus("Starting initialization process...")
 
-    # Track results of each component
+    # Track results of each component (in insertion order)
     results = {}
 
-    printStatus("Setting up LanceDB...")
-    results["LanceDB"] = ensureLanceDb()
+    # Run GPT-OSS model setup first
+    printStatus("Setting up GPT-OSS model...")
+    results["GPT-OSS model"] = ensureGptOssModel()
 
+    # Prepare model path to reuse later (no path verification here)
+    model_file = DOWNLOAD_DIRECTORY / "models" / "gpt-oss-20b.Q4_K.gguf"
+
+    # Remaining setup steps
     printStatus("Setting up llama.cpp binary...")
     results["llama.cpp binary"] = ensureLlamaCppBinary()
 
     printStatus("Setting up llama-cpp-python...")
     results["llama-cpp-python"] = ensureLlamaCppPython()
 
-    printStatus("Setting up GPT-OSS model...")
-    results["GPT-OSS model"] = ensureGptOssModel()
+
+    printStatus("RUN_MODEL_TEST set: attempting to load and test the GPT-OSS model")
+    test_ok = load_and_test_model(model_file, n_ctx=512)
+
+
 
     # Print final report
     print("\n" + "=" * 50)
@@ -512,6 +598,19 @@ def runInitializer() -> None:
         else:
             failed.append(component)
 
+    print("-" * 50)
+    print(f"Successful: {len(successful)}/{len(results)}")
+    if failed:
+        print(f"Failed components: {', '.join(failed)}")
+        print("Note: You can re-run this script to retry failed components.")
+    else:
+        print("All components initialized successfully!")
+
+    print("=" * 50)
+
+
+if __name__ == "__main__":
+    runInitializer()
     print("-" * 50)
     print(f"Successful: {len(successful)}/{len(results)}")
     if failed:

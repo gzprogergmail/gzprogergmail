@@ -1,0 +1,1103 @@
+2025-09-19 13:17:35 [INFO] Startup complete in 0.00 seconds
+2025-09-19 13:17:35 [INFO] Chatbot is ready! Type 'quit' to exit.
+2025-09-19 13:17:35 [INFO] Loading model from C:\gzprogergmail\downloads\models\tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf...
+2025-09-19 13:17:36 [INFO] Model loaded successfully in 0.64 seconds
+2025-09-19 13:17:36 [INFO] Connecting to database at C:\gzprogergmail\mydata
+2025-09-19 13:17:37 [INFO] Initializing embedding model...
+2025-09-19 13:17:37 [INFO] Use pytorch device_name: cpu
+2025-09-19 13:17:37 [INFO] Load pretrained SentenceTransformer: all-MiniLM-L6-v2
+2025-09-19 13:17:47 [INFO] Searching for: where are my logs
+2025-09-19 13:17:47 [INFO] QUESTION: where are my logs
+2025-09-19 13:17:47 [INFO] Found 5 relevant chunks
+2025-09-19 13:17:47 [INFO] Chunk 1: LogCollections.md (similarity: 0.3327)
+2025-09-19 13:17:47 [INFO] Content: issue for M1 that the format of copy out logs does not match to the expected log format of cmdlet `S...
+2025-09-19 13:17:47 [INFO] Chunk 2: UsageTSG.md (similarity: 0.3292)
+2025-09-19 13:17:47 [INFO] Content: # TSG for Usage RP 
+
+## Design 
+
+Usage design docs are [here](https://microsoft.sharepoint.com/teams...
+2025-09-19 13:17:47 [INFO] Chunk 3: Knowledge about TemplateDeploymentOplet.md (similarity: 0.3220)
+2025-09-19 13:17:47 [INFO] Content: # Knowledge about Template Deployment Oplet 
+
+# Retrieve Desired State Stage 
+
+* Success indicator l...
+2025-09-19 13:17:47 [INFO] Chunk 4: Knowledge about CLM.md (similarity: 0.2840)
+2025-09-19 13:17:47 [INFO] Content: **Start indicator log:** `Creating service: <service name>` 
+* **Success indicator log:** `[<applica...
+2025-09-19 13:17:47 [INFO] Chunk 5: LogCollections.md (similarity: 0.2737)
+2025-09-19 13:17:47 [INFO] Content: # Overview 
+To trigger on demand log collection, you can use cmdlets `Invoke-ApplianceLogCollection`...
+2025-09-19 13:17:47 [INFO] PROMPT: <system>
+You are a helpful assistant. Answer the user's question based on the following document snippets.
+If you can't answer based on the provided information, say so honestly.
+</system>
+
+<context>
+[Document 1: LogCollections.md]
+issue for M1 that the format of copy out logs does not match to the expected log format of cmdlet `Send-DiagnosticsData`. The workaround is to unzip all zip files in the log share folder 
+``` powershell 
+$logShareFolderPath = "***" 
+$unzipLogPath = "***" 
+$files = Get-ChildItem -Path $logShareFolderPath | Where-Object { $_.Extension -like "*.zip*" } 
+foreach ($file in $files) { 
+Expand-Achive -Path $file.FullName -Destination $unzipLogPath -Verbose 
+} 
+``` 
+
+## Step 4: Get the Stamp Id 
+You can use below command to get the environment `Stamp Id`. The stamp Id will be used to query the environment related data in Kusto. For more information, please check the help text of cmdlet `Get-ApplianceInstanceConfiguration`. 
+``` powershell 
+$stampId = (Get-ApplianceInstanceConfiguration).StampId 
+``` 
+
+# Option #3: Trigger Log Collection when Management Endpoint is not accessible 
+Fallback logging can be used to collect and send logs to Kusto if the IRVM is down or management endpoint is not reachable, and standard log collection cannot be invoked. This scenario includes three helper cmdlets: `Copy-DiagnosticData`, `Send-DiagnosticData`, and `Get-ObservabilityStampId`. 
+
+## Prerequisites: Retrieve and Store the BitLocker Key Set 
+The BitLocker recovery key set is required to unlock the mounted VHDs used for log collection. These keys should be retrieved and saved upon successful deployment of the appliance. The command to get BitLocker Key Set, 
+``` powershell 
+$recoverykeySet = Get-ApplianceBitlockerRecoveryKeys 
+$recoverykeySet | ConvertTo-JSON > c:\recoveryKey.json 
+``` 
+
+## Step 1: Copy Diagnostic Data 
+Since the IRVM is not expected to be functional in this scenario, logs are retrieved by shutting down the IRVM, mounting and unlocking the VHDs, and copying logs off the mounted VHDs into a local, user-defined file location. The time window and roles to be collected are configurable by the user. Also, if the Observability Stamp ID has been configured, it is included in the cmdlets return values. Note **this needs to be run on Hyper-V host machine where IRVM is running** 
+
+Sample: 
+``` powershell 
+mk c:\OutputLogs # Create folder to store the output diagnostics data 
+Copy-DiagnosticData -DiagnosticLogPath "C:\OutputLogs" -FromDate ((Get-Date).AddHours(-2)) -RecoveryKeySet $recoveryKeySet 
+``` 
+
+**Note**: The format of RecoveryKeySet parameter is like below. If you get the recovery key from `Get-ApplianceBitlockerRecoveryKeys`, RecoveryKeySet parameter should be `(Get-ApplianceBitlockerRecoveryKeys).recoverykeyset` 
+``` powershell 
+$recoveryKeySet = @( 
+[PSCustomObject]@{protectorid = "{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}"; recoverypassword = "######-######-######-######-######-######-######-######"} 
+[PSCustomObject]@{protectorid = "{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}"; recoverypassword = "######-######-######-######-######-######-######-######"} 
+[PSCustomObject]@{protectorid = "{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}"; recoverypassword = "######-######-######-######-######-######-######-######"} 
+) 
+``` 
+![image.png](CopyDiagnosticData.png) 
+
+The sample cmdlet output. You can get the log output folder and the stamp ID from the cmdlet output. 
+
+For more information, please check the help text of `Copy-DiagnosticData`. 
+
+## Step 2: Send Diagnostics Data 
+After copy the data out from VHD to host, the next step is upload the diagnostics data to Geneva/Kusto DB. Please gather service principal and other prerequisites for [Observability Setup](#prerequisites-observability-setup) needed to upload
+
+[Document 2: UsageTSG.md]
+# TSG for Usage RP 
+
+## Design 
+
+Usage design docs are [here](https://microsoft.sharepoint.com/teams/ASZ886/Shared%20Documents/Forms/AllItems.aspx?id=%2Fteams%2FASZ886%2FShared%20Documents%2FArc%20Autonomous%2FDesign%2DArcAUsage&viewid=a7c74d4c%2D28a2%2D449c%2D84b5%2D257bf830a14a) 
+
+## Logs 
+
+As of version >= 1.1.2791.31,the Usage service is temporarily writing its logs to the container console out instead of its own log provider as there is an issue with emitting ETL logs. That is, the usage logs are in 
+
+```kusto 
+C_ProviderName == "Microsoft-AzureStack-Solution-Containers-ContainerConsole" 
+``` 
+
+## Kusto Queries 
+
+The usage service consist of two parts: frontend and backend. 
+
+- frontend deals with all front-facing queries. Today the only query it supports is the Operator API usageReport 
+- backend deals with all background tasks, e.g. collection of usage records 
+
+## Frontend Queries 
+
+### usageReportAPI 
+
+- Required Role: ArcADiagnostics 
+- Required Table: EtlLogs 
+- Usage: For the usageReportAPI failures, we want either the correlationId or the usageReport name. Using the correlationId from the failed az cli command, we can track the entire workflow from ARM->RPaas->Usage service 
+
+```kusto 
+let stampId = "d9d86987-5220-4a51-b357-81de2b766b26"; 
+let correlationId = "ba3a9de2-c20c-42f4-be47-6125562e4ba1"; 
+EtlLogs 
+| where AEOStampId == stampId 
+| search correlationId 
+| order by C_TimeStamp asc 
+| project C_TimeStamp, C_ProviderName, C_Properties, C_TaskName 
+``` 
+
+- Required Role: ArcADiagnostics 
+- Required Table: EtlLogs 
+- Usage: To retrieve all logs with the usage service associated with a given usageReport job, use the usageReport name as the filter. 
+
+```kusto 
+let stampId = "d9d86987-5220-4a51-b357-81de2b766b26"; 
+let usageReportName = "wechafail1"; 
+EtlLogs 
+| where AEOStampId == stampId 
+| where C_ProviderName == "Microsoft-AzureStack-Solution-Containers-ContainerConsole" 
+| where C_Properties contains "usagefrontend-ws22" or C_Properties contains "usagebackend-ws22" 
+| where C_Properties contains usageReportName 
+| project C_TimeStamp, C_ProviderName, C_Properties 
+``` 
+
+## Backend Queries 
+
+The backend service is responsible for collecting and pushing usage records 
+
+### Collection 
+
+Usage is responsible for collecting the usage data from various RPs. Each RP is service by a job named after the RP 
+with a format \<RPNamespace>.CollectionJob_Id, e.g. ACR RP would be Microsoft.ContainerRegistryCollectionJob_Id 
+
+- Required Role: ArcADiagnostics 
+- Required Table: EtlLogs 
+- Usage: We can get a general overview of the collection progress by searching for the keyword "Collection" 
+
+```kusto 
+let stampId = "d9d86987-5220-4a51-b357-81de2b766b26"; 
+EtlLogs 
+| where AEOStampId == stampId 
+| where C_ProviderName == "Microsoft-AzureStack-Solution-Containers-ContainerConsole" 
+| where C_Properties contains "usagebackend-ws22" 
+| where C_Properties contains "Collection" 
+| project C_TimeStamp, C_ProviderName, C_Properties 
+``` 
+
+- Required Role: ArcADiagnostics 
+- Required Table: EtlLogs 
+- Usage: To dive deeper into the logs, search the backend logs for a specific collectionJobId for a given RP; get the collectionJobId from the earlier call. 
+
+```kusto 
+let stampId = "d9d86987-5220-4a51-b357-81de2b766b26"; 
+let collectionJobId = "c211a324-9531-4421-bacd-acc132cb66a1"; 
+EtlLogs 
+| where AEOStampId == stampId 
+| where C_ProviderName == "Microsoft-AzureStack-Solution-Containers-ContainerConsole" 
+| where C_Properties contains
+
+[Document 3: Knowledge about TemplateDeploymentOplet.md]
+# Knowledge about Template Deployment Oplet 
+
+# Retrieve Desired State Stage 
+
+* Success indicator log: "Retrieve desired state". 
+
+* Failure indicator log: None. 
+1. **Retrieve desired state operation.** 
+* Success indicator log: "Retrieve desired state". 
+* Failure indicator log: None. 
+
+--- 
+
+# Retrieve Current/Believed State Stage 
+
+* Success indicator log: "Current/believed state retrieved successfully". 
+
+* Failure indicator log: None. 
+1. **Retrieve current/believed state operation.** 
+
+* Success indicator log: "Retrieve current/believed state". 
+* Failure indicator log: None. 
+
+2. **Retrieve subscription name.** 
+
+* Success indicator log: "Key: '<template_name>', Value: '<subscription_name>'". 
+* Failure indicator log: None. 
+
+3. **Retrieve template deployment ID.** 
+
+* Success indicator log: "Deployment name: '<template_name>_<uuid>'". 
+* Failure indicator log: None. 
+
+4. **Retrieve template deployment state.** 
+
+* Success indicator log: "Found a template deployment for '<template_name>'". 
+* Failure indicator log: "Desire '<template_name>' is not found". 
+
+5. **Save template deployment to public settings.** 
+
+* Success indicator log: "'<template_name>' is already written to public settings". 
+* Failure indicator log: None. 
+
+--- 
+
+# Reconcile Templates Stage (reconcile desired and believed state) 
+
+* Success indicator log: "=== desire and current state are already converged". 
+
+* Failure indicator log: "Template of '<template_name>' is not ready to be reconciled". 
+1. **Validate if ARM manifest registered** 
+
+* Failure indicator log: "ARM service is not available or ARM Manifest is not registered. Returning from reconcile." 
+
+2. **Start reconcile** 
+
+* Start indicator log: "Reconcile starts" 
+
+3. **Get reconcilable template** 
+Validate template could be reconcilable, reconcilable templates will go through reconciles steps 
+3.1 **Ensure template is not running** 
+* Failure indicator log: Template of <template_name> is still running. Skipping reconciliation. 
+
+3.2 **Validate template** 
+* Success indicator log: "The template validation was successfully completed." 
+* Failure indicator log: "The template validation was failed with <status>'" 
+
+4. **Send template deployment request.** 
+* Success indicator log: "The template 'PUT' request was succeeded with 'Created'. DeploymentId: <template_name>_<uuid>". 
+* Failure indicator log: "The template 'PUT' request was failed with '<response_status>'. DeploymentId: <template_name>_<uuid>." 
+
+--- 
+
+# Processed Templates: 
+
+* "ConfigDP_create_rg" 
+* "ConfigDP_create_cosmos" 
+* "customlocation_create_rg" 
+* "customlocation_create_cosmos" 
+* "ArcK8sConnectRP_create_rg" 
+* "ArcK8sConnectRP_create_cosmos" 
+* "ASZRP_create_rg" 
+* "ASZRP_create_cosmos" 
+* "arn_create_rg" 
+* "InternalSubscription_RoleAssignment" 
+* "rpaas_create_resourcegroup" 
+* "rpaas_create_cosmos" 
+* "portal_create_resourcegroup" 
+* "portal_create_cosmos" 
+* "edgeartifactrp_create_rg" 
+* "edgeartifactrp_create_acr" 
+* "edgeoperatorrp_create_rg" 
+* "msi_create_resourcegroup" 
+* "msi_create_cosmos" 
+* "ARCForServer_create_rg" 
+* "ARCForServer_create_cosmos" 
+* "ArcK8sBridge_create_rg" 
+* "ArcK8sBridge_create_cosmos" 
+
+--- 
+
+# Possible Causes for Template Deployment Failure: 
+
+1. **Missing or Incorrect Resource Provider Registration**: Logs like "ResourceProvider: '<resource provider>'. Registration Status: 'NotRegistered'" indicate that the required resource provider is not
+
+[Document 4: Knowledge about CLM.md]
+**Start indicator log:** `Creating service: <service name>` 
+* **Success indicator log:** `[<application name>] DNS name is <service name>.` 
+* **Processed Services:** 
+* xxx 
+* xxx 
+
+* **4.4: Confirm Application installation complete.** 
+
+* **Success indicator log:** `[<application name>] Installation of <application name uri> completed.` 
+* **Processed Applications:** 
+* xxx 
+
+* **4.5: Wait for services to be ready.** 
+
+* **Start indicator log:** `[fabric:/<application name>] waiting for <application name> to be ready ...` 
+
+* **Success indicator log:** `Service fabric application fabric:/<application name> is ready` 
+
+* **4.6 Final confirm Application deployment success** 
+
+* **Success indicator log:** `[<application name>] Completed deployment/update of application.`
+
+[Document 5: LogCollections.md]
+# Overview 
+To trigger on demand log collection, you can use cmdlets `Invoke-ApplianceLogCollection`, `Invoke-ApplianceLogCollectionAndSaveToShareFolder`, `Get-ApplianceLogCollectionHistory` and `Get-ApplianceLogCollectionJobStatus` in Winfield PS module with parameters FromDate, ToDate and optionally FilterRoles with array of component names for which logs to uploaded. The command should run on the HOST which can access management endpoint. 
+
+# Prerequisites: Observability Setup 
+Follow [Observability Setup](https://eng.ms/docs/cloud-ai-platform/azure-edge-platform-aep/aep-edge/azure-stack-hub/winfield/arca-observability/onboardingguide/onboardingprerequisites) steps to enable log collection. 
+
+**Note**: 
+- You can use below command to download latest <b>Azure Local with disconnected operations</b> PS module, 
+``` Powershell 
+az artifacts universal download --organization https://dev.azure.com/msazure --feed AzureStackUniversalBuddy@Prerelease --name azure.local.disconnectedoperations.psmodule --version * --path . 
+``` 
+- Before you run below command, you need to figure out, 
+- The management endpoint IP address. 
+- The management client certificate used to authenticate with <b>Azure Local with disconnected operations</b> management endpoint. 
+- Run below command to setup management endpoint client context, see [Connect Management Endpoint via Winfield Module Cmdlets](Day0DeploymentTSG.md#connect-management-endpoint-via-winfield-module-cmdlets) 
+
+# Option #1: Log Collection for Connected Environment if Management Endpoint is accessible 
+You can follow below step to trigger log collection in <b>Azure Local with disconnected operations</b> if the management endpoint is accessible. If the management endpoint or IRVM is not reachable, you can follow another section `Trigger Log Collection when Management Endpoint is not accessible`. Below step is for environment which has the internet connection. 
+
+
+## Step 1: Trigger log collection 
+You can use cmdlet `Invoke-ApplianceLogCollection` to trigger the log collection. 
+
+**Note:** You need to setup the observability configuration with <b>Azure Local with disconnected operations</b> module cmdlet before trigger the log collection for connected environment. 
+
+You can use below cmdlet to verify the observability configuration is set, 
+``` PowerShell 
+Get-ApplianceObservabilityConfiguration 
+``` 
+
+If it is not set, please setup the [observability configuration](#prerequisites-observability-setup). 
+
+See below sample 
+``` Powershell 
+$observabilityConfiguration = New-ApplianceObservabilityConfiguration ` 
+-ResourceGroupName "WinfieldPreview" ` 
+-TenantId "<Tenant Id>" ` 
+-Cloud "AzureCloud" ` 
+-Location "eastus" ` 
+-SubscriptionId "<Subscription Id>" ` 
+-ServicePrincipalId "<Service Principal Id of the one you prepared>" ` 
+-ServicePrincipalSecret (Read-Host -AsSecureString "Service Principal secret of the one you prepared") 
+
+Set-ApplianceObservabilityConfiguration -ObservabilityConfiguration $observabilityConfiguration 
+``` 
+
+Then you can trigger the log collection. Below is the sample. For more information, please check the help text of cmdlet `Invoke-ApplianceLogCollection`. 
+``` Powershell 
+$fromDate = (Get-Date).AddMinutes(-30) 
+$toDate = (Get-Date) 
+$operationId = Invoke-ApplianceLogCollection -FromDate $fromDate -ToDate $toDate 
+``` 
+
+## Step 2: Wait Log Collection Finished 
+You can use cmdlets `Get-ApplianceLogCollectionHistory` and `Get-ApplianceLogCollectionJobStatus` to retrieve current log collection job status. For more information, please check the help text of cmdlet `Get-ApplianceLogCollectionJobStatus` and `Get-ApplianceLogCollectionHistory`. 
+``` Powershell 
+Get-ApplianceLogCollectionJobStatus -OperationId $OperationId 
+``` 
+Or 
+``` Powershell 
+Get-ApplianceLogCollectionHistory -FromDate ((Get-Date).AddHours(-3)) 
+``` 
+
+## Step 3: Get the Stamp Id 
+You can use below command to get the environment `Stamp Id`. The stamp
+
+
+</context>
+
+<user>
+where are my logs
+</user>
+
+<assistant>
+
+2025-09-19 13:17:47 [INFO] Generating response...
+2025-09-19 13:19:07 [INFO] MODEL RESPONSE: ERTsRTOSOTsOSc.3c.cRTOSiaTOS3TcOS3CRTiaOSOSOSosDiAT34cP3C3OsOST4s1LogMDi3M2DiTOS2LogStT3DiRTOSRTARTsTRTDTTStc TStStiptcOSRStRTRTcosOSFTRTTPRTRTcVRTOS1TPRT23osSts3ingRRT cOSKRTRTaRTRsNeRSRTsAOsCRSRTOSRTRSFTs for3osRTOsRTRSEOSFT3MRTMOTs to to theiDiRTos33sCFTososampia3ECCsCCrTStCotSiaOsRiaVAftsCrotROsFaStOsCRTRTRTsOSOsSStotSerTTORSts fromTStOCsDivaAOOsEOsiaosAOOsAAOs1CosStAiaStosCopyAPRSC1EoRTiaotEOSRT to the3sTRTRTARTs1CRTRSRSRTRTRT andMRTOS,RTCiva2V2CRTMPNT2R3RRT,DRT the,1CFTDCS.CRTD112HRTRT of theOperingamp2Oper2Ap stD2DMRT.EECStVFFDNDA St2CepOpCRTCRTRsDDsopSRVCamp of oper9CsER.Vrip2OpersSa12SaampvRRiaStop.Stopicts29RCStSRSStCOper2opOperSososOperos OperirsOper forCenSStiaRTOpersDRSssia---StiSROPsSal withopROROSFsOs.R.SiopssRssSUsicesCRsRSRi fromCCRITsRseRsTseSRS.NSESssopRicsBssotvsssCrCubivedBMSRTCKKKKRsed1CRsSCKSopopRT.2seTUsMOpKS.SikSSCRTSBSMo.SRSictRDwithndopScopRS.forSopR.OutEOSER.StSIScrRsUsopS.SIPSDSCat.IRRRSEUsopistrontsedseOsDSRcRopOperoKes.ofsedSeRSofofSRikSofof theStsStDCCKRKKusseSKKKes.Kofse.SRUsionswithsseseSofSt.withseokseofseusforseStse.seSofR.DSN forwithwithwithoutse withwithwiththewithwithoutPRforSSeSeMus withseOutUsOutsSeVWseSKSusedSditsUsSMSTsSteUs andESeSeVSuSUSalSSeSeSeESeSeSeSeSe andSeSeSeUsSeSeSeStSeUSSCStSeEWSeStStRsStSStSeSSTSeUsESeSSeSeOutEwSeRESeStStOSStesStSeSalSeSeWsStESePUES.EUOsSEOswSMStUsSeSeSeUseOsSeSESeUsEStSeOUUSeWeuSDSOOutESeSanFrontSeSeUsEEEEWOutESEStOutSeEEStStSRDEEColTusEUSEUsOutEepstSsuStOutsEUsUSStUsSEUsOutStStEUstSstEUsSeSUofofofEEColStEEWwithESuStEAOutFrontESSeColcEUREESeCEOutEStESeEcaAUAuvECeuEESeEcEAEAEFrontEEUsESSEEEcEUEREEssEEsaEEEEEcEcErEUEEEEsuaEEREUEaEEssSstsSESteStsEEEEESEStsEEEEAOutEStsEESt
+2025-09-19 13:19:07 [INFO] RESPONSE: ERTsRTOSOTsOSc.3c.cRTOSiaTOS3TcOS3CRTiaOSOSOSosDiAT34cP3C3OsOST4s1LogMDi3M2DiTOS2LogStT3DiRTOSRTARTsTRTDTTStc TStStiptcOSRStRTRTcosOSFTRTTPRTRTcVRTOS1TPRT23osSts3ingRRT cOSKRTRTaRTRsNeRSRTsAOsCRSRTOSRTRSFTs for3osRTOsRTRSEOSFT3MRTMOTs to to theiDiRTos33sCFTososampia3ECCsCCrTStCotSiaOsRiaVAftsCrotROsFaStOsCRTRTRTsOSOsSStotSerTTORSts fromTStOCsDivaAOOsEOsiaosAOOsAAOs1CosStAiaStosCopyAPRSC1EoRTiaotEOSRT to the3sTRTRTARTs1CRTRSRSRTRTRT andMRTOS,RTCiva2V2CRTMPNT2R3RRT,DRT the,1CFTDCS.CRTD112HRTRT of theOperingamp2Oper2Ap stD2DMRT.EECStVFFDNDA St2CepOpCRTCRTRsDDsopSRVCamp of oper9CsER.Vrip2OpersSa12SaampvRRiaStop.Stopicts29RCStSRSStCOper2opOperSososOperos OperirsOper forCenSStiaRTOpersDRSssia---StiSROPsSal withopROROSFsOs.R.SiopssRssSUsicesCRsRSRi fromCCRITsRseRsTseSRS.NSESssopRicsBssotvsssCrCubivedBMSRTCKKKKRsed1CRsSCKSopopRT.2seTUsMOpKS.SikSSCRTSBSMo.SRSictRDwithndopScopRS.forSopR.OutEOSER.StSIScrRsUsopS.SIPSDSCat.IRRRSEUsopistrontsedseOsDSRcRopOperoKes.ofsedSeRSofofSRikSofof theStsStDCCKRKKusseSKKKes.Kofse.SRUsionswithsseseSofSt.withseokseofseusforseStse.seSofR.DSN forwithwithwithoutse withwithwiththewithwithoutPRforSSeSeMus withseOutUsOutsSeVWseSKSusedSditsUsSMSTsSteUs andESeSeVSuSUSalSSeSeSeESeSeSeSeSe andSeSeSeUsSeSeSeStSeUSSCStSeEWSeStStRsStSStSeSSTSeUsESeSSeSeOutEwSeRESeStStOSStesStSeSalSeSeWsStESePUES.EUOsSEOswSMStUsSeSeSeUseOsSeSESeUsEStSeOUUSeWeuSDSOOutESeSanFrontSeSeUsEEEEWOutESEStOutSeEEStStSRDEEColTusEUSEUsOutEepstSsuStOutsEUsUSStUsSEUsOutStStEUstSstEUsSeSUofofofEEColStEEWwithESuStEAOutFrontESSeColcEUREESeCEOutEStESeEcaAUAuvECeuEESeEcEAEAEFrontEEUsESSEEEcEUEREEssEEsaEEEEEcEcErEUEEEEsuaEEREUEaEEssSstsSESteStsEEEEESEStsEEEEAOutEStsEESt
+2025-09-19 13:19:16 [INFO] 
+Goodbye!
+2025-09-19 13:21:35 [INFO] Startup complete in 0.00 seconds
+2025-09-19 13:21:35 [INFO] Chatbot is ready! Type 'quit' to exit.
+2025-09-19 13:21:35 [INFO] Loading model from C:\gzprogergmail\downloads\models\tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf...
+2025-09-19 13:21:36 [INFO] Model loaded successfully in 0.67 seconds
+2025-09-19 13:21:36 [INFO] Running model test with a simple prompt...
+2025-09-19 13:21:36 [INFO] Testing with prompt: 'Hi there, how are you?'
+2025-09-19 13:21:37 [INFO] Testing with formatted prompt in expected template format...
+2025-09-19 13:21:37 [INFO] The model doesn't seem to be specialized for the current prompt format.
+2025-09-19 13:21:37 [INFO] Model test complete. If responses are poor, consider:
+2025-09-19 13:21:37 [INFO] 1. Using a larger or different model
+2025-09-19 13:21:37 [INFO] 2. Adjusting the prompt format
+2025-09-19 13:21:37 [INFO] 3. Reducing context length
+2025-09-19 13:21:37 [INFO] 4. Setting a different temperature (lower for more focused responses)
+2025-09-19 13:21:37 [INFO] Connecting to database at C:\gzprogergmail\mydata
+2025-09-19 13:21:37 [INFO] Initializing embedding model...
+2025-09-19 13:21:37 [INFO] Use pytorch device_name: cpu
+2025-09-19 13:21:37 [INFO] Load pretrained SentenceTransformer: all-MiniLM-L6-v2
+2025-09-19 13:21:41 [INFO] Searching for: hi
+2025-09-19 13:21:41 [INFO] QUESTION: hi
+2025-09-19 13:21:41 [INFO] Found 5 relevant chunks
+2025-09-19 13:21:41 [INFO] Chunk 1: Template_TSG-KnownIssues-template.md (similarity: 0.1126)
+2025-09-19 13:21:41 [INFO] Content: | **Area**: *Enter area/scenario. Example: ACR, Arc for Kubernetes, Portal, etc.* | **Type**: *TSG o...
+2025-09-19 13:21:41 [INFO] Chunk 2: DefaultTemplate.md (similarity: 0.0970)
+2025-09-19 13:21:41 [INFO] Content: # [Winfield][R:PUB][B:#.####.#.##][O: OEM ][C: CUSTOMER ][AzSReg: StampRegion] Incident Description ...
+2025-09-19 13:21:41 [INFO] Chunk 3: TSG_for_Arc4K8s.md (similarity: 0.0929)
+2025-09-19 13:21:41 [INFO] Content: # Troubleshooting Arc for Kubernetes 
+
+Link to Troubleshooting Arc4k8s Services - [Wiki](https://msa...
+2025-09-19 13:21:41 [INFO] Chunk 4: RbacTSG.md (similarity: 0.0929)
+2025-09-19 13:21:41 [INFO] Content: # Authorization RP TSG 
+
+## Design 
+
+https://aka.ms/arca-identity 
+
+## Threat model 
+
+RBAC threat mo...
+2025-09-19 13:21:41 [INFO] Chunk 5: How to Investigate StartupShutDown Failure.md (similarity: 0.0925)
+2025-09-19 13:21:41 [INFO] Content: # Title: How to Investigate Startup and Shutdown Failure 
+
+# Background 
+In ADLO engineeing system, ...
+2025-09-19 13:21:41 [INFO] PROMPT: <system>
+You are a helpful assistant. Answer the user's question based on the following document snippets.
+If you can't answer based on the provided information, say so honestly.
+</system>
+
+<context>
+[Document 1: Template_TSG-KnownIssues-template.md]
+| **Area**: *Enter area/scenario. Example: ACR, Arc for Kubernetes, Portal, etc.* | **Type**: *TSG or Known Issue* | 
+
+### Description 
+*Enter a description for the issue.* 
+
+### Troubleshooting steps 
+*Enter the steps needed to diagnose/understand the issue (logs to look at, queries to run, etc.)* 
+
+### Mitigation steps 
+*Enter the steps to mitigate the issue.* 
+
+### Escalation/Owners 
+*Enter contact info for scenario owners for questions or escalations*
+
+[Document 2: DefaultTemplate.md]
+# [Winfield][R:PUB][B:#.####.#.##][O: OEM ][C: CUSTOMER ][AzSReg: StampRegion] Incident Description 
+
+## [ISSUE DESCRIPTION] 
+Replace with a brief summary of issue 
+
+## [Current Status] 
+Replace with a brief summary of latest status for this IcM 
+
+## [IMPACT] 
+Replace with a brief description of the current customer impact that supports the IcM severity level 
+
+## [LOGS] 
+Please provide the URL to log location in the Helen portal> https://azsd.azurewebsites.net/cases/<replace with yourcase# 
+
+## [ENVIRONMENT DETAILS] 
+Replace with any pertinent information about the environment relative to the case, i.e. disconnected, previous issues, etc. 
+
+
+## [TROUBLESHOOTING] 
+Replace with a brief summary of troubleshooting steps already taken, full details should be put in discussion section of the IcM for tracking 
+
+## [ASK] 
+Any specific asks of engineering
+
+[Document 3: TSG_for_Arc4K8s.md]
+# Troubleshooting Arc for Kubernetes 
+
+Link to Troubleshooting Arc4k8s Services - [Wiki](https://msazure.visualstudio.com/One/_wiki/wikis/One.wiki/745580/Troubleshooting-Arc4k8s-Services) 
+
+The following are the services: 
+
+- Connect RP 
+- Config RP 
+- Config DP 
+- CMS 
+- GNS 
+- K8s Bridge 
+- Custom Location
+
+[Document 4: RbacTSG.md]
+# Authorization RP TSG 
+
+## Design 
+
+https://aka.ms/arca-identity 
+
+## Threat model 
+
+RBAC threat model is here [here](https://msazure.visualstudio.com/One/_git/ALDO-Documentation?path=/src/Threatmodels/ARCA-STS-RBAC-TM.tm7) 
+
+## Service Status Check 
+
+1. Check if RBAC service is running by trying following URL 
+https://resourcemanagerweb.azs:40007/subscriptions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/providers/Microsoft.Authorization/permissions?api-version=2015-07-01 
+
+If above returns the following message then that shows RP is registered with ARM and running fine 
+
+``` json 
+{"error":{"code":"TenantNotPresent","message":"Tenant ID was not found in the request headers."}} 
+``` 
+
+2. Confirm if the Microsoft.Authorization RP is registered with ARM 
+
+[CLI] 
+
+``` ps 
+az provider list 
+``` 
+
+[ARCA Portal] 
+
+View the Resource Providers tab and make sure Microsoft.Authorization is registered 
+
+## Logs 
+
+1. Check CLMAgent logs at \\\irvm01\e$\Diagnostics\FabricRingArcA\AgentTrace to confirm that RBAC oplets are running and/or do not have errors. 
+2. To troubleshoot RBAC service failures, you can view logs at \\\irvm01\e$\Diagnostics\FabricRingArcA\RbacApplication. 
+3. If RBAC oplets are running, then you can check logs at \\\irvm01\e$\Diagnostics\UniversalRuntime\OpletTrace under Microsoft-AzureStack-URT-Oplet-BuiltInRoleDefinitionOplet and Microsoft-AzureStack-URT-Oplet-BuiltInRoleAssignmentOplet Event Types. 
+
+## Kusto Queries 
+
+### CLM for RBAC Service 
+
+- Required Role: ArcADiagnostics 
+- Required Table: EtlLogs 
+- Usage: Outputs general RBAC service health logs as managed by CLM. 
+
+```kusto 
+EtlLogs 
+| where AEOStampId == "cfb133f5-4fb5-4c6c-911e-73e4912fb9f4" 
+| where C_ProviderName == "Microsoft-AzureStack-Solution-CLM" and C_Properties contains "rbac" 
+| project-keep C_* 
+| extend Properties = parse_json(C_Properties) 
+| evaluate bag_unpack(Properties) 
+| order by C_TimeStamp asc 
+| project C_TimeStamp, C_TaskName, message, C_Properties, C_ProcessId 
+``` 
+
+### RBAC Application 
+
+- Required Role: ArcADiagnostics 
+- Required Table: EtlLogs 
+- Usage: Outputs logs from the RBAC service backend. 
+
+```kusto 
+EtlLogs 
+| where AEOStampId == "cfb133f5-4fb5-4c6c-911e-73e4912fb9f4" 
+| where C_ProviderName == "Microsoft-Authorization-Rbac" 
+| project-keep C_* 
+| extend Properties = parse_json(C_Properties) 
+| evaluate bag_unpack(Properties) 
+| order by C_TimeStamp asc 
+| project C_TimeStamp, C_TaskName, message, C_Properties, C_ProcessId 
+``` 
+
+### BuiltInRoleDefinitionOplet 
+
+- Required Role: Oplets 
+- Required Table: EtlLogs 
+- Usage: Outputs logs from the BuiltInRoleDefinitionOplet about syncing built in role definitions with CosmosDB. 
+
+```kusto 
+EtlLogs 
+| where AEOStampId == "cfb133f5-4fb5-4c6c-911e-73e4912fb9f4" 
+| where C_ProviderName == "Microsoft-AzureStack-URT-Oplet-BuiltInRoleDefinitionOplet" 
+| project-keep C_* 
+| extend Properties = parse_json(C_Properties) 
+| evaluate bag_unpack(Properties) 
+| order by C_TimeStamp asc 
+| project C_TimeStamp, C_TaskName, activity, message, C_Properties, C_ProcessId 
+``` 
+
+### BuiltInRoleAssignmentOplet 
+
+- Required Role: Oplets 
+- Required Table: EtlLogs 
+- Usage: Outputs logs from the BuiltInRoleAssignmentOplet about syncing built in role assignments with CosmosDB. 
+
+```kusto 
+EtlLogs 
+| where AEOStampId == "cfb133f5-4fb5-4c6c-911e-73e4912fb9f4" 
+| where C_ProviderName == "Microsoft-AzureStack-URT-Oplet-BuiltInRoleAssignmentOplet" 
+| project-keep C_* 
+| extend Properties = parse_json(C_Properties) 
+| evaluate bag_unpack(Properties) 
+| order by C_TimeStamp asc 
+| project C_TimeStamp, C_TaskName, activity, message, C_Properties, C_ProcessId 
+```
+
+[Document 5: How to Investigate StartupShutDown Failure.md]
+# Title: How to Investigate Startup and Shutdown Failure 
+
+# Background 
+In ADLO engineeing system, there is a kind of quality validation pipeline called StartupAndShutdown pipeline, which startup and shutdown IRVM 
+for multiple times. This doc is to diagnose the failure of this kind of pipeline. 
+
+# Symptom 
+This document introduced how to investigate startup and shutdown pipeline failures, if a pipeline failure is classified as ArcA-StartupShutdown failure, 
+you may refer to this document as a guide to diangose the failure. 
+
+# Action 
+To investigate this case, there are 2 major steps: 
+* Step1: First you need to figure out which run failed, and the timeframe covers the failure, as the startup shutdown tests will be runing for multiple times, 
+you need to find out which timeframe the pipeline fails. 
+* Step2: Investigate kusto logs to figureout not ready applications or unconverged oplets. 
+* Step3: If you can't find any application/oplets with problem after running step2, you need to investigate if any services are unhealthy. 
+* Step4: If you can't find any serviecs not healthy, you need to investigate failure test case or general deployment script with the execution log of ArcA-Test. 
+
+## Step1: Figureout failed run and the timeframe covers pipeline failure. 
+Please run the folloing python code to get the timefream for the failure. Please replace the [buildID] with the actual build id 
+```python 
+import requests, json, base64 
+from datetime import time 
+from dateutil.parser import parse 
+from requests.auth import HTTPBasicAuth 
+
+access_token = "{{access_token}}" 
+encoded_token = base64.b64encode(f":{access_token}".encode('ascii')).decode('ascii') 
+headers = { 
+"Authorization": HTTPBasicAuth('', access_token), #f"Basic {encoded_token}", 
+} 
+
+def http_get(url: str): 
+try: 
+response = requests.get(url, auth=HTTPBasicAuth('', access_token)) 
+response.raise_for_status() 
+return response 
+except requests.exceptions.RequestException as e: 
+print(f"GET Request Failed: {e}") 
+
+def http_download_file(url, outputPath: str): 
+try: 
+response = requests.get(url) #, stream=True, auth=HTTPBasicAuth('', access_token)) 
+response.raise_for_status() 
+if (outputPath == ''): 
+return response.text 
+else: 
+with open(outputPath, 'wb') as file: 
+file.write(response.text) 
+return "" 
+except requests.exceptions.RequestException as e: 
+print(f"Download Request Failed: {e}") 
+
+def get_test_names(buildid: str): 
+json_data = http_get(f"https://dev.azure.com/msazure/one/_apis/test/runs?buildUri=vstfs:///Build/Build/{buildid}") 
+response = json.loads(json_data.content) 
+return response['value'] 
+
+def get_test_results(buildid): 
+results = {} 
+tests = get_test_names(buildid) 
+for test in tests: 
+if test['name'].split('.').__len__() >=2: 
+testName = test['name'].split('.')[1] 
+else: 
+testName = test['name'] 
+if testName == "ArcA-StartupShutdown": 
+runId = test['id'] 
+response = http_get(f"https://dev.azure.com/msazure/one/_apis/test/Runs/{runId}/results?api-version=7.0") 
+test_result = json.loads(response.content) 
+for test in test_result["value"]: 
+test_name = test['automatedTestName'] 
+test_index = test_name[len('Startup/Shutdown Test '):test_name.find(" - ")] 
+if test_index in results: 
+results[test_index] = results[test_index] and test['state'] == 'Completed' and (test['outcome'] == "Passed" or test['outcome'] == "NotExecuted") 
+else: 
+results[test_index] = test['state'] == 'Completed' and (test['outcome'] == "Passed" or test['outcome'] == "NotExecuted") 
+return results 
+
+def get_test_timeframe(buildid): 
+tests = get_test_names(buildid) 
+times_frames = {} 
+for test
+
+
+</context>
+
+<user>
+hi
+</user>
+
+<assistant>
+
+2025-09-19 13:21:41 [INFO] Generating response...
+2025-09-19 13:22:38 [INFO] MODEL RESPONSE: s:esc/help 
+
+s
+
+prov Azure provided  
+ 
+
+
+
+
+
+
+ 
+
+
+or contexts suggested or
+help:  T
+st contexto
+
+
+
+ 
+
+
+
+ 
+Bin:
+Sih 
+
+
+or
+
+de:
+
+
+
+
+
+:
+
+: Ino:
+Rr: 
+R:
+Default
+TD: 
+
+If
+TDes 62o: G:  az:
+
+S enter S:<in Azure:
+<
+
+Es: 
+
+
+
+T
+Es:
+
+ [1
+
+S
+
+<
+<
+ 
+
+
+
+: [
+
+ 
+ 
+
+
+
+ [
+[<
+[s
+ [[
+
+ 
+pro:  and  
+  if [[Enter:
+
+
+
+ent:  
+    R: [Azure      s: 
+1    R: Es:  [T
+:
+
+int  [2 R:  Intes Res  [  3.  
+R  R S  [R  R.1 R [R: 
+S provided Azure<Res
+
+
+es:ifes r.
+es
+s
+ es
+
+
+
+or in the
+es 
+
+
+
+
+
+[R eses toeses or:
+
+
+es
+
+
+or:
+
+
+
+
+enter:oreseseses or or: or 
+
+s:
+[es
+enter
+in ```
+eseses:
+
+and
+
+
+or: eses enter:
+H 
+Step [Enteres:[B or esc:es.Ses and 
+B
+or Azure[Enter if `
+S [esc [es:<
+[thees [entes and the:or:
+Azure
+
+ES
+esces
+B:
+B:
+and their:
+
+: "
+
+
+B.
+
+
+es R and
+with
+es:
+
+B and R R es
+
+Bes/Rs:
+ R:
+
+
+
+ B
+B the R R B B B R R B B: R</B
+Azure: R B R R
+ R
+B B
+
+ R R Enter:
+
+ Res: B:
+
+Enter B R: Enteres: B:
+
+
+
+ B: R
+
+R:
+: R B:
+
+R. R Esc R R
+B Esc R R B R B R R B R R R
+
+B: Res B
+ R Enter r R Res: R R, Res r B R R
+
+<R Res B Res R Res Bes R B: R R B. R Bes Res R. R B B Res Res R R: R: Azure: R B: R B R R
+R: R R B B Res
+ R: R
+ R Es R Enter R  R R R B R R R R R Res R
+
+: R R B B R R R R B R B B R Bes R R B R Res R Res R Azure R R Azure Res R R R R B Res R R R R R R R R R R R R
+ Res Res R
+ B R R B R Res Reses B R R Res B Res  R Res R R R B  R R R R R B R R B R B r R R B R [[  R R R  R R R Res R R B B R B R R R R R R R R R Esc B R R B  R R R B R R B R R B R B R B R R B R R R R R R B R R R R R R R R R R Res R R B R
+ B 
+
+ R  R R R R R R Res R R R R B Enter R Res R R Res  R B R R B R Enteres Res B Res R B Bes R Res R B R R R R B R R B R Di R  B R B R R B on R  In Res Res, R Bes Bes R R R R Res R R Res B Res R R R R R R Res R R R R R Bes R R Res T Reseseses R Bes Res R Reseseses Res B Res R B R B Reses R Res R R Res Reseses Res Res Bes R
+2025-09-19 13:22:38 [INFO] RESPONSE: s:esc/help 
+
+s
+
+prov Azure provided  
+ 
+
+
+
+
+
+
+ 
+
+
+or contexts suggested or
+help:  T
+st contexto
+
+
+
+ 
+
+
+
+ 
+Bin:
+Sih 
+
+
+or
+
+de:
+
+
+
+
+
+:
+
+: Ino:
+Rr: 
+R:
+Default
+TD: 
+
+If
+TDes 62o: G:  az:
+
+S enter S:<in Azure:
+<
+
+Es: 
+
+
+
+T
+Es:
+
+ [1
+
+S
+
+<
+<
+ 
+
+
+
+: [
+
+ 
+ 
+
+
+
+ [
+[<
+[s
+ [[
+
+ 
+pro:  and  
+  if [[Enter:
+
+
+
+ent:  
+    R: [Azure      s: 
+1    R: Es:  [T
+:
+
+int  [2 R:  Intes Res  [  3.  
+R  R S  [R  R.1 R [R: 
+S provided Azure<Res
+
+
+es:ifes r.
+es
+s
+ es
+
+
+
+or in the
+es 
+
+
+
+
+
+[R eses toeses or:
+
+
+es
+
+
+or:
+
+
+
+
+enter:oreseseses or or: or 
+
+s:
+[es
+enter
+in ```
+eseses:
+
+and
+
+
+or: eses enter:
+H 
+Step [Enteres:[B or esc:es.Ses and 
+B
+or Azure[Enter if `
+S [esc [es:<
+[thees [entes and the:or:
+Azure
+
+ES
+esces
+B:
+B:
+and their:
+
+: "
+
+
+B.
+
+
+es R and
+with
+es:
+
+B and R R es
+
+Bes/Rs:
+ R:
+
+
+
+ B
+B the R R B B B R R B B: R</B
+Azure: R B R R
+ R
+B B
+
+ R R Enter:
+
+ Res: B:
+
+Enter B R: Enteres: B:
+
+
+
+ B: R
+
+R:
+: R B:
+
+R. R Esc R R
+B Esc R R B R B R R B R R R
+
+B: Res B
+ R Enter r R Res: R R, Res r B R R
+
+<R Res B Res R Res Bes R B: R R B. R Bes Res R. R B B Res Res R R: R: Azure: R B: R B R R
+R: R R B B Res
+ R: R
+ R Es R Enter R  R R R B R R R R R Res R
+
+: R R B B R R R R B R B B R Bes R R B R Res R Res R Azure R R Azure Res R R R R B Res R R R R R R R R R R R R
+ Res Res R
+ B R R B R Res Reses B R R Res B Res  R Res R R R B  R R R R R B R R B R B r R R B R [[  R R R  R R R Res R R B B R B R R R R R R R R R Esc B R R B  R R R B R R B R R B R B R B R R B R R R R R R B R R R R R R R R R R Res R R B R
+ B 
+
+ R  R R R R R R Res R R R R B Enter R Res R R Res  R B R R B R Enteres Res B Res R B Bes R Res R B R R R R B R R B R Di R  B R B R R B on R  In Res Res, R Bes Bes R R R R Res R R Res B Res R R R R R R Res R R R R R Bes R R Res T Reseseses R Bes Res R Reseseses Res B Res R B R B Reses R Res R R Res Reseses Res Res Bes R
+2025-09-19 13:23:20 [INFO] 
+Goodbye!

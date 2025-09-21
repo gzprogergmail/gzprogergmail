@@ -4,9 +4,24 @@ from __future__ import annotations
 import sys
 import subprocess
 import json
+import time
+import traceback
+import logging  # Added for file logging
+from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import lancedb
+import os  # Add this import at the top of the file
+
+# Set up logging to file
+log_file = Path(__file__).parent / "chatbot_log.txt"
+logging.basicConfig(
+    filename=str(log_file),
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger("chatbot")
 
 # Check for required packages and install if missing
 try:
@@ -33,27 +48,33 @@ except ImportError:
 # Number of relevant chunks to retrieve
 TOP_K = 5
 # Context size for the model
-MAX_TOKENS = 2048
+MAX_TOKENS = 8192
 # Default model path (relative to the script directory)
 DEFAULT_MODEL_PATH = "downloads/models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
 # Verbosity flag - set to True to see detailed information
 VERBOSE = True
+# Set this to False to reduce model loading verbosity
+MODEL_VERBOSE = False
 
 
 def printStatus(message: str) -> None:
     """Print a status message."""
     print(f"[chatbot] {message}")
+    logger.info(message)
 
 
 def printVerbose(message: str) -> None:
     """Print verbose information if VERBOSE is enabled."""
     if VERBOSE:
         print(f"[chatbot:verbose] {message}")
+    # Always log to file regardless of console verbosity
+    logger.debug(message)
 
 
 def printAssistant(message: str) -> None:
     """Print a message from the assistant."""
     print(f"\n[Assistant]: {message}\n")
+    logger.info(f"RESPONSE: {message}")
 
 
 def get_embedding_function():
@@ -75,6 +96,7 @@ def get_embedding_function():
 
 def load_llama_model() -> Optional[llama_cpp.Llama]:
     """Load the LLM model using llama.cpp."""
+    print("[chatbot] Starting model load process...")
     script_dir = Path(__file__).parent.resolve()
     model_path = script_dir / DEFAULT_MODEL_PATH
 
@@ -102,21 +124,38 @@ def load_llama_model() -> Optional[llama_cpp.Llama]:
 
     try:
         printStatus(f"Loading model from {model_path}...")
+        print(f"[chatbot] This may take a while depending on model size...")
         printVerbose(f"Model file size: {model_path.stat().st_size / (1024*1024):.1f} MB")
-        printVerbose(f"Using context size of {MAX_TOKENS} tokens")
+        print(f"[chatbot] Starting model initialization...")
 
-        load_start_time = time.time()
-        model = llama_cpp.Llama(
-            model_path=str(model_path),
-            n_ctx=MAX_TOKENS,
-            n_batch=8,
-            verbose=VERBOSE,
-        )
-        load_duration = time.time() - load_start_time
+        # Temporarily reduce console output
+        original_stdout = sys.stdout
+        original_stderr = sys.stderr
+        if not MODEL_VERBOSE:
+            # Redirect output to suppress verbose llama.cpp initialization
+            sys.stdout = open(os.devnull, 'w')
+            sys.stderr = open(os.devnull, 'w')
+
+        try:
+            print("[chatbot] Loading model into memory...")
+            load_start_time = time.time()
+            model = llama_cpp.Llama(
+                model_path=str(model_path),
+                n_ctx=MAX_TOKENS,
+                n_batch=8,
+                verbose=False,  # Set to False to reduce verbosity
+            )
+            load_duration = time.time() - load_start_time
+        finally:
+            # Restore output streams
+            if not MODEL_VERBOSE:
+                sys.stdout.close()
+                sys.stderr.close()
+                sys.stdout = original_stdout
+                sys.stderr = original_stderr
 
         printStatus(f"Model loaded successfully in {load_duration:.2f} seconds")
-        printVerbose(f"Model metadata: {model.model_path}")
-        printVerbose(f"Vocabulary size: {model.n_vocab()} tokens")
+        print("[chatbot] Model is ready for use!")
         return model
     except Exception as e:
         printStatus(f"Error loading model: {e}")
@@ -157,7 +196,7 @@ def connect_to_database():
 def search_documents(query: str, db, embedding_function) -> List[Dict[str, Any]]:
     """Search for relevant document chunks based on query."""
     printStatus(f"Searching for: {query}")
-    printVerbose(f"Query length: {len(query)} characters")
+    logger.info(f"QUESTION: {query}")
 
     # Check if the documents table exists
     table_name = "documents"
@@ -207,6 +246,16 @@ def search_documents(query: str, db, embedding_function) -> List[Dict[str, Any]]
             results.append({k: v for k, v in item.items()})
         printVerbose(f"Found {len(results)} matching documents using fallback method")
 
+    # Log the results
+    if results:
+        logger.info(f"Found {len(results)} relevant chunks")
+        for i, result in enumerate(results, 1):
+            source = Path(result.get("sourcePath", "Unknown")).name
+            logger.info(f"Chunk {i}: {source} (similarity: {1-result.get('_distance', 0):.4f})")
+            logger.info(f"Content: {result.get('text', '')[:100]}...")
+    else:
+        logger.info("No relevant chunks found")
+
     return results
 
 
@@ -246,13 +295,16 @@ If you can't answer based on the provided information, say so honestly.
 """
 
     printVerbose(f"Total prompt length: {len(prompt)} characters")
+
+    # Log the full prompt
+    logger.info(f"PROMPT: {prompt}")
+
     return prompt
 
 
 def generate_response(model: llama_cpp.Llama, prompt: str) -> str:
     """Generate a response from the LLM model based on the prompt."""
     printStatus("Generating response...")
-    printVerbose("Sending prompt to language model")
 
     try:
         # Generate completion
@@ -268,7 +320,10 @@ def generate_response(model: llama_cpp.Llama, prompt: str) -> str:
 
         response = output["choices"][0]["text"].strip()
         printVerbose(f"Response generated in {gen_duration:.2f} seconds")
-        printVerbose(f"Response length: {len(response)} characters")
+
+        # Log the response
+        logger.info(f"MODEL RESPONSE: {response}")
+
         return response
 
     except Exception as e:
@@ -277,67 +332,196 @@ def generate_response(model: llama_cpp.Llama, prompt: str) -> str:
         return "Sorry, I encountered an error while generating a response."
 
 
-def chat_loop():
-    """Run the main chat loop."""
-    # Add import time for the verbose timing
-    import time
+def format_results(results: List[Dict[str, Any]]) -> str:
+    """Format search results into a readable response."""
+    if not results:
+        return "I couldn't find any relevant information for your query."
 
-    start_time = time.time()
-    printStatus("Initializing chatbot...")
+    formatted_response = "Here's what I found (retrieval only mode):\n\n"
+
+    for i, result in enumerate(results, 1):
+        source_path = result.get("sourcePath", "Unknown source")
+        text = result.get("text", "No text available")
+        lines = f"Lines {result.get('startLine', '?')}-{result.get('endLine', '?')}"
+
+        formatted_response += f"--- Result {i} ---\n"
+        formatted_response += f"Source: {source_path} ({lines})\n"
+        formatted_response += f"{text}\n\n"
+
+    return formatted_response
+
+
+def test_model_response(model: llama_cpp.Llama) -> None:
+    """Test the model with a simple prompt to diagnose response quality."""
+    printStatus("Running model test with a simple prompt...")
+
+    # Try a simple prompt first
+    simple_prompt = "Hi there, how are you?"
+    printStatus(f"Testing with prompt: '{simple_prompt}'")
+
+    try:
+        simple_response = model.create_completion(
+            simple_prompt,
+            max_tokens=50,
+            temperature=0.7,
+            stream=False
+        )
+        print("\n[Model Test] Simple prompt:")
+        print(f"Prompt: '{simple_prompt}'")
+        print(f"Response: '{simple_response['choices'][0]['text']}'")
+
+        # Try a formatted prompt that matches our template
+        formatted_prompt = """<system>
+You are a helpful assistant.
+</system>
+
+<user>
+Hi there, how are you?
+</user>
+
+<assistant>
+"""
+        printStatus("Testing with formatted prompt in expected template format...")
+        formatted_response = model.create_completion(
+            formatted_prompt,
+            max_tokens=50,
+            stop=["</assistant>", "<user>"],
+            temperature=0.7,
+            stream=False
+        )
+        print("\n[Model Test] Formatted prompt:")
+        print(f"Response: '{formatted_response['choices'][0]['text']}'")
+
+        # Compare and suggest fixes
+        if len(formatted_response['choices'][0]['text'].strip()) > len(simple_response['choices'][0]['text'].strip()):
+            printStatus("The model responds better to the formatted prompt with proper tags.")
+        else:
+            printStatus("The model doesn't seem to be specialized for the current prompt format.")
+
+        printStatus("Model test complete. If responses are poor, consider:")
+        printStatus("1. Using a larger or different model")
+        printStatus("2. Adjusting the prompt format")
+        printStatus("3. Reducing context length")
+        printStatus("4. Setting a different temperature (lower for more focused responses)")
+
+    except Exception as e:
+        printStatus(f"Error during model test: {e}")
+
+
+def chat_loop():
+    """Main loop to process user queries and provide responses."""
+    printStatus("Chatbot is ready! Type 'quit' to exit.")
+
+    # Load the LLM model
+    model = None
+    while model is None:
+        try:
+            model = load_llama_model()
+            if model is None:
+                printStatus("Retrying model load in 5 seconds...")
+                time.sleep(5)  # Wait before retrying
+        except Exception as e:
+            printStatus(f"Error loading model: {e}")
+            printVerbose(traceback.format_exc())
+            printStatus("Retrying model load in 5 seconds...")
+            time.sleep(5)  # Wait before retrying
+
+    # Run simple test to diagnose model quality
+    test_model_response(model)
 
     # Connect to the database
     db = connect_to_database()
 
-    # Load the embedding function
+    # Initialize the embedding function
     embedding_function = get_embedding_function()
 
-    # Load the LLM model
-    model = load_llama_model()
-    if model is None:
-        printStatus("Continuing in retrieval-only mode (no AI generation)")
-        printVerbose("Run initializer.py to download a language model for AI generation")
-    else:
-        printStatus("Ready with AI generation capabilities!")
-
-    # Startup complete
-    setup_duration = time.time() - start_time
-    printStatus(f"Initialization completed in {setup_duration:.2f} seconds")
-    printStatus("Ready! Type 'exit' or 'quit' to end the conversation.")
-
+    # Main query processing loop
     while True:
-        user_input = input("\n[You]: ").strip()
+        try:
+            user_input = input("\n[You]: ").strip()
 
-        if user_input.lower() in ("exit", "quit", "bye"):
-            printStatus("Goodbye!")
-            break
+            if user_input.lower() == "quit":
+                printStatus("Goodbye!")
+                logger.info("Chat session ended by user")
+                break
 
-        if not user_input:
-            continue
+            query_start_time = time.time()
 
-        query_start_time = time.time()
+            # Search for relevant documents using the embedding function
+            results = search_documents(user_input, db, embedding_function)
 
-        # Search for relevant documents using the embedding function
-        results = search_documents(user_input, db, embedding_function)
+            if not results:
+                printAssistant("I couldn't find any relevant information for your question.")
+                continue
 
-        if not results:
-            printAssistant("I couldn't find any relevant information for your question.")
-            continue
+            # If model is available, use it to generate a response
+            if model is not None:
+                # Create prompt with context
+                prompt = create_prompt_with_context(user_input, results)
 
-        # If model is available, use it to generate a response
+                # Generate response
+                response = generate_response(model, prompt)
+
+                # Print the generated response
+                printAssistant(response)
+            else:
+                # Fall back to just showing the chunks if model isn't available
+                response = format_results(results)
+                printAssistant(response)
+
+            # Show query handling time
+            query_duration = time.time() - query_start_time
+            printVerbose(f"Query processed in {query_duration:.2f} seconds")
+        except Exception as query_error:
+            printStatus(f"Error processing query: {query_error}")
+            printVerbose(traceback.format_exc())
+            logger.error(f"Error processing query: {query_error}", exc_info=True)
+            printStatus("Ready for next query...")
+
+    # Cleanup actions if needed
+    printStatus("Cleaning up resources...")
+    # Close database connection
+    try:
+        db.close()
+        printStatus("Database connection closed")
+    except Exception as e:
+        printStatus(f"Error closing database connection: {e}")
+
+    # Model cleanup (if applicable)
+    try:
         if model is not None:
-            # Create prompt with context
-            prompt = create_prompt_with_context(user_input, results)
+            model.cleanup()
+            printStatus("Model resources cleaned up")
+    except Exception as e:
+        printStatus(f"Error cleaning up model resources: {e}")
 
-            # Generate response
-            response = generate_response(model, prompt)
+    printStatus("Goodbye!")
 
-            # Print the generated response
-            printAssistant(response)
-        else:
-            # Fall back to just showing the chunks if model isn't available
-            response = format_results(results)
-            printAssistant(response)
 
-        # Show query handling time
-        query_duration = time.time() - query_start_time
-        printVerbose(f"Query processed in {query_duration:.2f} seconds")
+# Measure startup time
+start_time = time.time()
+printStatus(f"Startup complete in {time.time() - start_time:.2f} seconds")
+
+# Main entry point - provide immediate feedback
+if __name__ == "__main__":
+    print("\n[chatbot] Starting chatbot...")
+    print("[chatbot] Initializing components...")
+
+    start_time = time.time()
+
+    try:
+        print("[chatbot] Setting up logging...")
+        # Logging already set up at module level
+
+        print("[chatbot] Starting chat loop...")
+        chat_loop()
+
+    except KeyboardInterrupt:
+        printStatus("\nGoodbye!")
+    except Exception as e:
+        print(f"\n[FATAL ERROR] {e}")
+        traceback.print_exc()
+        logger.critical(f"Fatal error: {e}", exc_info=True)
+        sys.exit(1)
+
+    print(f"[chatbot] Total runtime: {time.time() - start_time:.2f} seconds")
