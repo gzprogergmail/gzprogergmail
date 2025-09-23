@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Optional, Callable
 from urllib.error import URLError, HTTPError
 from urllib.request import urlopen, Request, urlretrieve
-import requests  # Added import at the correct location
-import threading  # new import
+import requests
+import threading
 
 # Create SSL context that works across platforms
 ssl_context = ssl.create_default_context()
@@ -27,14 +27,7 @@ LLAMA_CPP_PACKAGE = "llama-cpp-python"
 # Basic verbosity control (enable by setting INIT_VERBOSE=1 in the environment)
 VERBOSE = os.environ.get("INIT_VERBOSE", "").lower() in ("1", "true", "yes")
 
-# Default fallback URLs in case API fetch fails
-FALLBACK_URLS = {
-    "Linux": "https://github.com/ggml-org/llama.cpp/releases/download/b6484/llama-b6484-bin-ubuntu-x64.zip",
-    "Darwin": "https://github.com/ggml-org/llama.cpp/releases/download/b6484/llama-b6484-bin-macos-arm64.zip",
-    "Windows": "https://github.com/ggml-org/llama.cpp/releases/download/b6484/llama-b6484-bin-win-cpu-x64.zip",
-}
-
-# Get latest release URLs or fall back to known ones
+# Get latest release URLs from GitHub API
 LLAMA_CPP_URLS = {}
 try:
     repo = "ggml-org/llama.cpp"
@@ -56,15 +49,12 @@ try:
         "Windows": f"https://github.com/{repo}/releases/download/{tag}/llama-{tag}-bin-win-cpu-x64.zip",
     }
 except Exception as e:
-    if VERBOSE:
-        print(f"[WARNING] Could not fetch latest release info: {e}. Falling back to known static URLs.")
-    # Fallback to known static URLs if GitHub API request fails
-    LLAMA_CPP_URLS = FALLBACK_URLS
+    print(f"[ERROR] Failed to fetch latest release info: {e}")
+    print("[ERROR] Please check your internet connection or try again later.")
+    sys.exit(1)
 
-# Update the model URL to point to a more accessible GGUF model that works with llama.cpp
-# Original URL had authentication issues:
-# GPT_OSS_MODEL_URL = "https://huggingface.co/microsoft/DialoGPT-medium/resolve/main/pytorch_model.bin"
-GPT_OSS_MODEL_URL = "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
+# GPT-OSS model URL
+GPT_OSS_MODEL_URL = "https://huggingface.co/bartowski/openai_gpt-oss-20b-GGUF/resolve/main/openai_gpt-oss-20b-Q8_0.gguf"
 
 DOWNLOAD_DIRECTORY = Path("downloads")
 MAX_RETRIES = 3
@@ -387,14 +377,10 @@ def ensureLlamaCppPython() -> bool:
 
 
 def ensureGptOssModel() -> bool:
-    """Download a suitable GGUF format model file for use with llama.cpp."""
+    """Download the GPT-OSS model file for use with llama.cpp."""
     try:
-        # Use TinyLlama which is small (1.1B) and publicly accessible without authentication
-        modelUrl = GPT_OSS_MODEL_URL
-        # Use the GPT-OSS 20B GGUF model
         modelFileName = "gpt-oss-20b.Q4_K.gguf"
-        # Point modelUrl to the 20B GGUF on Hugging Face (adjust if the actual repo/filename differs)
-        modelUrl = "https://huggingface.co/bartowski/openai_gpt-oss-20b-GGUF/resolve/main/openai_gpt-oss-20b-Q8_0.gguf"
+        modelUrl = GPT_OSS_MODEL_URL
         modelPath = DOWNLOAD_DIRECTORY / "models" / modelFileName
 
         # Create models directory if it doesn't exist
@@ -440,24 +426,6 @@ def ensureGptOssModel() -> bool:
             # Verify the model file exists and has a reasonable size (at least 100KB)
             if modelPath.exists() and modelPath.stat().st_size > 100 * 1024:
                 printStatus(f"Model file downloaded successfully: {modelPath}")
-
-                # Test if the model can be loaded by llama.cpp
-                try:
-                    import llama_cpp
-                    printStatus("Testing model loading with llama-cpp-python...")
-                    # Just create a model object to see if it loads
-                    model = llama_cpp.Llama(
-                        model_path=str(modelPath),
-                        n_ctx=512,  # Small context for testing
-                        n_batch=8,
-                        verbose=False
-                    )
-                    printStatus("Model loaded successfully with llama-cpp-python")
-                except ImportError:
-                    printStatus("llama-cpp-python not available for model testing")
-                except Exception as e:
-                    printWarning(f"Model loaded but test failed: {e}")
-
                 return True
             else:
                 printError("Downloaded model file is too small or doesn't exist")
@@ -467,7 +435,7 @@ def ensureGptOssModel() -> bool:
             printError(f"GPT-OSS model download failed: {download_error}")
             return False
 
-    except Exception as error:  # pylint: disable=broad-except
+    except Exception as error:
         printError(f"Failed to download GPT-OSS model: {error}")
         return False
 
@@ -527,7 +495,7 @@ def load_and_test_model(modelPath: Path, n_ctx: int = 512) -> bool:
 
     # Send a short test prompt ("Hi") and print the response
     try:
-        prompt = "Hi"
+        prompt = "Hi, tell me  a joke"
         printStatus(f"Sending test prompt to model: {prompt!r}")
         # small completion for a quick sanity check
         out = model.create_completion(prompt, max_tokens=50, temperature=0.0, stream=False)
@@ -568,6 +536,10 @@ def runInitializer() -> None:
     # Prepare model path to reuse later (no path verification here)
     model_file = DOWNLOAD_DIRECTORY / "models" / "gpt-oss-20b.Q4_K.gguf"
 
+    # Add LanceDB setup
+    printStatus("Setting up LanceDB...")
+    results["LanceDB"] = ensureLanceDb()
+
     # Remaining setup steps
     printStatus("Setting up llama.cpp binary...")
     results["llama.cpp binary"] = ensureLlamaCppBinary()
@@ -575,11 +547,13 @@ def runInitializer() -> None:
     printStatus("Setting up llama-cpp-python...")
     results["llama-cpp-python"] = ensureLlamaCppPython()
 
-
-    printStatus("RUN_MODEL_TEST set: attempting to load and test the GPT-OSS model")
-    test_ok = load_and_test_model(model_file, n_ctx=512)
-
-
+    # Run model test if file exists
+    if model_file.exists():
+        printStatus("Testing model loading and response...")
+        test_ok = load_and_test_model(model_file, n_ctx=4096)
+        results["Model test"] = test_ok
+    else:
+        printError("Model file not found, skipping test")
 
     # Print final report
     print("\n" + "=" * 50)
@@ -598,19 +572,6 @@ def runInitializer() -> None:
         else:
             failed.append(component)
 
-    print("-" * 50)
-    print(f"Successful: {len(successful)}/{len(results)}")
-    if failed:
-        print(f"Failed components: {', '.join(failed)}")
-        print("Note: You can re-run this script to retry failed components.")
-    else:
-        print("All components initialized successfully!")
-
-    print("=" * 50)
-
-
-if __name__ == "__main__":
-    runInitializer()
     print("-" * 50)
     print(f"Successful: {len(successful)}/{len(results)}")
     if failed:
