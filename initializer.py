@@ -150,7 +150,7 @@ def ensureLanceDb() -> bool:
                 from sentence_transformers import SentenceTransformer
 
                 printStatus("Testing embedding functionality with SentenceTransformer")
-                model = SentenceTransformer("all-MiniLM-L6-v2")
+                model = SentenceTransformer("BAAI/bge-m3")
                 _ = model.encode(["Initialization probe"])
                 printStatus("Embedding model test successful")
             except ImportError:
@@ -158,7 +158,7 @@ def ensureLanceDb() -> bool:
                 ensurePackageInstalled("sentence-transformers")
                 from sentence_transformers import SentenceTransformer
 
-                model = SentenceTransformer("all-MiniLM-L6-v2")
+                model = SentenceTransformer("BAAI/bge-m3")
                 _ = model.encode(["Initialization probe"])
                 printStatus("Embedding model ready")
         except Exception as embed_error:

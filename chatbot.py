@@ -46,10 +46,10 @@ except ImportError:
     import llama_cpp
 
 # Number of relevant chunks to retrieve
-TOP_K = 5
+TOP_K = 15  # Increased from 5 to get more semantic matches
 # Context size for the model - will be dynamically adjusted
-MAX_TOKENS_RATING = 2048  # Reduced for chunk rating phase
-MAX_TOKENS_GENERATION = 8192  # For final answer generation
+MAX_TOKENS_RATING = 4096  # Reduced for chunk rating phase
+MAX_TOKENS_GENERATION = 16384  # For final answer generation
 # Default model path (relative to the script directory) - changed to GPT-OSS
 DEFAULT_MODEL_PATH = "downloads/models/gpt-oss-20b.Q4_K.gguf"
 # Verbosity flag - set to True to see detailed information
@@ -180,8 +180,8 @@ def connect_to_database():
 
 
 def search_documents(query: str, db, embedding_function) -> List[Dict[str, Any]]:
-    """Search for relevant document chunks based on query."""
-    printStatus(f"Searching for: {query}")
+    """Search for relevant document chunks based on query using semantic (vector) search."""
+    printStatus(f"Performing semantic search for: {query}")
     logger.info(f"QUESTION: {query}")
 
     # Check if the documents table exists
@@ -195,52 +195,55 @@ def search_documents(query: str, db, embedding_function) -> List[Dict[str, Any]]
     table = db.open_table(table_name)
     printVerbose(f"Opened table '{table_name}'")
 
-    # Generate query embedding using the same function as during ingestion
-    printVerbose("Generating embedding for query")
+    # Generate query embedding for semantic search
+    printVerbose("Generating embedding for semantic search")
     query_embedding = embedding_function.embed(query)[0]
     printVerbose(f"Embedding generated (dimension: {len(query_embedding)})")
 
-    # Search for similar documents
-    printVerbose(f"Searching for top {TOP_K} documents by cosine similarity")
+    # Search for similar documents using pure vector similarity (semantic search)
+    printVerbose(f"Searching for top {TOP_K} documents by cosine similarity (semantic search)")
     try:
         search_start_time = time.time()
+
+        # Pure semantic search - only using vector similarity with no keyword filter
         results = (
             table.search(query_embedding)
-            .metric("cosine")
-            .limit(TOP_K)
+            .metric("cosine")  # Cosine similarity for semantic matching
+            .limit(TOP_K)      # Retrieve more candidates for better coverage
             .to_pandas()
             .to_dict("records")
         )
+
         search_duration = time.time() - search_start_time
-        printVerbose(f"Search completed in {search_duration:.4f} seconds")
-        printVerbose(f"Found {len(results)} matching documents")
+        printVerbose(f"Semantic search completed in {search_duration:.4f} seconds")
+        printVerbose(f"Found {len(results)} semantically matching documents")
 
         # Show similarity scores if available and verbose is on
         if VERBOSE and results:
             for i, result in enumerate(results):
                 if "_distance" in result:
                     similarity = 1 - result["_distance"]  # Convert distance to similarity
-                    printVerbose(f"Result {i+1} similarity score: {similarity:.4f}")
+                    printVerbose(f"Result {i+1} semantic similarity score: {similarity:.4f}")
 
     except Exception as e:
-        printStatus(f"Error during search: {e}")
+        printStatus(f"Error during semantic search: {e}")
         printVerbose("Falling back to simpler search method")
         # Fallback to a simpler approach if pandas conversion fails
         results = []
         raw_results = table.search(query_embedding).metric("cosine").limit(TOP_K).to_list()
         for item in raw_results:
             results.append({k: v for k, v in item.items()})
-        printVerbose(f"Found {len(results)} matching documents using fallback method")
+        printVerbose(f"Found {len(results)} documents using fallback semantic search")
 
     # Log the results
     if results:
-        logger.info(f"Found {len(results)} relevant chunks")
+        logger.info(f"Found {len(results)} semantically relevant chunks")
         for i, result in enumerate(results, 1):
             source = Path(result.get("sourcePath", "Unknown")).name
-            logger.info(f"Chunk {i}: {source} (similarity: {1-result.get('_distance', 0):.4f})")
+            logger.info(f"Chunk {i}: {source} (semantic similarity: {1-result.get('_distance', 0):.4f})")
             logger.info(f"Content: {result.get('text', '')[:100]}...")
     else:
-        logger.info("No relevant chunks found")
+        logger.info("No semantically relevant chunks found")
 
     return results
 
