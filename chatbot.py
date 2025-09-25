@@ -81,9 +81,9 @@ def printAssistant(message: str) -> None:
 def get_embedding_function():
     """Create an embedding function using SentenceTransformer."""
     printStatus("Initializing embedding model...")
-    printVerbose("Using SentenceTransformer with 'all-MiniLM-L6-v2' model")
-    printVerbose("This model produces embeddings with 384 dimensions")
-    model = SentenceTransformer("all-MiniLM-L6-v2")
+    printVerbose("Using SentenceTransformer with 'BAAI/bge-m3' model")
+    printVerbose("This model produces embeddings with 1024 dimensions")
+    model = SentenceTransformer("BAAI/bge-m3")
 
     class EmbeddingFunction:
         def embed(self, texts):

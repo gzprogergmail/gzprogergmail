@@ -107,7 +107,7 @@ def chunkTokens(tokens: Sequence[TokenSlice], chunkSize: int = 500, overlap: int
 def get_embedding_function():
     """Create a sentence transformer embedding function."""
     printStatus("Initializing embedding model...")
-    model = SentenceTransformer("all-MiniLM-L6-v2")
+    model = SentenceTransformer("BAAI/bge-m3")
 
     class EmbeddingFunction:
         def embed(self, texts):
